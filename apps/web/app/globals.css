@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-paper: #f5f7fa;
+  --color-panel: #ffffff;
+  --color-line: #dde3ea;
+  --color-ink: #13233f;
+  --color-ink-soft: #4a5a74;
+  --color-ink-faint: #7d8aa0;
+  --color-wire: #1d3b6e;
+
+  --color-ok: #0e7c70;
+  --color-ok-bg: #e3f4f1;
+  --color-retry: #a86400;
+  --color-retry-bg: #fdf1dc;
+  --color-dead: #b42318;
+  --color-dead-bg: #fdeceb;
+  --color-skip: #5d6b82;
+  --color-skip-bg: #eef1f5;
+}
+
+html {
+  font-feature-settings: "ss02";
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-wire);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes signal {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
