@@ -1,0 +1,25 @@
+{
+  "name": "hookrelay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration & workflow-automation hub: signed webhooks, event routing, retries, n8n workflows and a Next.js dashboard.",
+  "license": "MIT",
+  "author": "Aryan Srivastava",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:api": "npm run dev -w apps/api",
+    "dev:web": "npm run dev -w apps/web",
+    "migrate": "npm run migrate -w apps/api",
+    "seed": "npm run seed -w apps/api",
+    "lint": "npm run lint -w apps/api",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test -w apps/api",
+    "build": "npm run build --workspaces"
+  }
+}

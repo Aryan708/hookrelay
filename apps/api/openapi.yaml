@@ -1,0 +1,371 @@
+openapi: 3.1.0
+info:
+  title: HookRelay API
+  version: 1.0.0
+  description: |
+    Integration & workflow-automation hub. Receive signed webhooks, route them through
+    filters and field mappings, and deliver them to n8n workflows or any HTTP endpoint
+    with retries, dead-lettering and a full audit trail.
+
+    **Authentication**
+    - Dashboard users: `Authorization: Bearer <JWT access token>` (15 min) + rotating httpOnly refresh cookie.
+    - Machines: `X-API-Key: hr_...` (or `Authorization: Bearer hr_...`) with explicit scopes.
+    - Inbound webhooks: `X-HookRelay-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`.
+servers:
+  - url: http://localhost:4000
+    description: Local API
+  - url: http://localhost:3000/api
+    description: Via the Next.js dashboard proxy
+tags:
+  - name: Auth
+  - name: Members
+  - name: API Keys
+  - name: Sources
+  - name: Destinations
+  - name: Routes
+  - name: Ingest
+  - name: Events
+  - name: Insights
+security:
+  - bearerAuth: []
+  - apiKey: []
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    apiKey: { type: apiKey, in: header, name: X-API-Key }
+    webhookSignature: { type: apiKey, in: header, name: X-HookRelay-Signature }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: validation_error }
+            message: { type: string }
+            details: {}
+            requestId: { type: string }
+    Role: { type: string, enum: [owner, admin, developer, viewer] }
+    Session:
+      type: object
+      properties:
+        accessToken: { type: string }
+        expiresIn: { type: integer, example: 900 }
+        user: { $ref: '#/components/schemas/User' }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        workspaceId: { type: string, format: uuid }
+    Source:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        ingestUrl: { type: string, format: uri }
+        signingSecret: { type: string, description: Returned only on create / rotate }
+    Destination:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        url: { type: string, format: uri }
+        timeout_ms: { type: integer }
+        max_attempts: { type: integer }
+        signingSecret: { type: string, description: Returned only on create }
+    Condition:
+      type: object
+      required: [path, op]
+      properties:
+        path: { type: string, example: data.amount }
+        op: { type: string, enum: [eq, neq, contains, gt, gte, lt, lte, exists, in] }
+        value: {}
+    Mapping:
+      type: object
+      description: Target path → source path string, `{const}` literal or `{template}` string.
+      additionalProperties:
+        oneOf:
+          - { type: string, example: data.customer.email }
+          - { type: object, properties: { const: {} } }
+          - { type: object, properties: { template: { type: string, example: 'Order {{data.id}} paid' } } }
+    Route:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        source_id: { type: string, format: uuid }
+        destination_id: { type: string, format: uuid }
+        enabled: { type: boolean }
+        filter: { type: array, items: { $ref: '#/components/schemas/Condition' } }
+        mapping: { $ref: '#/components/schemas/Mapping' }
+    IngestResult:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        duplicate: { type: boolean }
+        deliveries:
+          type: array
+          items:
+            type: object
+            properties:
+              routeId: { type: string, format: uuid }
+              status: { type: string, enum: [pending, skipped] }
+paths:
+  /healthz:
+    get: { tags: [Insights], summary: Liveness probe, security: [], responses: { '200': { description: OK } } }
+  /readyz:
+    get: { tags: [Insights], summary: Readiness probe (checks database), security: [], responses: { '200': { description: Ready }, '503': { description: Not ready } } }
+
+  /v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Create a workspace and its owner account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceName, name, email, password]
+              properties:
+                workspaceName: { type: string }
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12, description: 'Upper, lower case and a digit' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties: { email: { type: string }, password: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate the refresh cookie and get a new access token
+      description: Presenting an already-rotated refresh token revokes the whole session family (theft detection).
+      security: []
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/auth/logout:
+    post: { tags: [Auth], summary: Revoke the current session, security: [], responses: { '204': { description: Signed out } } }
+  /v1/auth/me:
+    get: { tags: [Auth], summary: Current user, workspace and permissions, responses: { '200': { description: OK } } }
+  /v1/auth/providers:
+    get: { tags: [Auth], summary: Enabled sign-in providers, security: [], responses: { '200': { description: OK } } }
+  /v1/auth/github:
+    get: { tags: [Auth], summary: Start GitHub OAuth 2.0 (authorization code + PKCE), security: [], responses: { '302': { description: Redirect to GitHub } } }
+  /v1/auth/github/callback:
+    get:
+      tags: [Auth]
+      summary: GitHub OAuth callback
+      security: []
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses: { '302': { description: Redirect to dashboard }, '400': { $ref: '#/components/responses/Error' } }
+
+  /v1/members:
+    get: { tags: [Members], summary: List workspace members (members:read), responses: { '200': { description: OK } } }
+    post:
+      tags: [Members]
+      summary: Add a member (members:write). Cannot grant a role above your own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, role, temporaryPassword]
+              properties:
+                email: { type: string }
+                name: { type: string }
+                role: { $ref: '#/components/schemas/Role' }
+                temporaryPassword: { type: string }
+      responses: { '201': { description: Created }, '403': { $ref: '#/components/responses/Error' } }
+  /v1/members/{id}:
+    patch:
+      tags: [Members]
+      summary: Change role or disable a member (revokes their sessions)
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { role: { $ref: '#/components/schemas/Role' }, disabled: { type: boolean } } }
+      responses: { '200': { description: OK }, '400': { $ref: '#/components/responses/Error' }, '403': { $ref: '#/components/responses/Error' } }
+
+  /v1/api-keys:
+    get: { tags: [API Keys], summary: List API keys (hash never returned), responses: { '200': { description: OK } } }
+    post:
+      tags: [API Keys]
+      summary: Create a scoped API key (plaintext returned once)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name: { type: string }
+                scopes: { type: array, items: { type: string, enum: [events:write, events:read, events:replay, sources:read, routes:read] } }
+                expiresInDays: { type: integer, minimum: 1, maximum: 365 }
+      responses: { '201': { description: Created } }
+  /v1/api-keys/{id}:
+    delete: { tags: [API Keys], summary: Revoke an API key, parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '204': { description: Revoked } } }
+
+  /v1/sources:
+    get: { tags: [Sources], summary: List webhook sources, responses: { '200': { description: OK } } }
+    post:
+      tags: [Sources]
+      summary: Create a source (returns its signing secret once)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string }, description: { type: string } } } } }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Source' } } } } }
+  /v1/sources/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get: { tags: [Sources], summary: Get a source, responses: { '200': { description: OK } } }
+    patch: { tags: [Sources], summary: Update a source, responses: { '200': { description: OK } } }
+    delete: { tags: [Sources], summary: Delete a source, responses: { '204': { description: Deleted } } }
+  /v1/sources/{id}/rotate-secret:
+    post: { tags: [Sources], summary: Rotate the signing secret, parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: OK } } }
+
+  /v1/destinations:
+    get: { tags: [Destinations], summary: List destinations with 24h delivery stats, responses: { '200': { description: OK } } }
+    post:
+      tags: [Destinations]
+      summary: Create a destination (SSRF-checked; https required in production)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, url]
+              properties:
+                name: { type: string }
+                url: { type: string, format: uri }
+                timeoutMs: { type: integer, minimum: 1000, maximum: 30000 }
+                maxAttempts: { type: integer, minimum: 1, maximum: 10 }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Destination' } } } }, '400': { $ref: '#/components/responses/Error' } }
+  /v1/destinations/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch: { tags: [Destinations], summary: Update a destination, responses: { '200': { description: OK } } }
+    delete: { tags: [Destinations], summary: Delete a destination, responses: { '204': { description: Deleted } } }
+
+  /v1/routes:
+    get: { tags: [Routes], summary: List routes, responses: { '200': { description: OK } } }
+    post:
+      tags: [Routes]
+      summary: Connect a source to a destination with filters and a field mapping
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, sourceId, destinationId]
+              properties:
+                name: { type: string }
+                sourceId: { type: string, format: uuid }
+                destinationId: { type: string, format: uuid }
+                enabled: { type: boolean }
+                filter: { type: array, items: { $ref: '#/components/schemas/Condition' } }
+                mapping: { $ref: '#/components/schemas/Mapping' }
+      responses: { '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Route' } } } } }
+  /v1/routes/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch: { tags: [Routes], summary: Update a route, responses: { '200': { description: OK } } }
+    delete: { tags: [Routes], summary: Delete a route, responses: { '204': { description: Deleted } } }
+
+  /v1/ingest/{sourceId}:
+    post:
+      tags: [Ingest]
+      summary: Receive a signed webhook
+      description: |
+        Verifies the HMAC signature (5 min replay window), stores the event idempotently
+        (`Idempotency-Key` or `X-Event-Id` header) and fans it out to matching routes.
+      security: [{ webhookSignature: [] }]
+      parameters:
+        - { name: sourceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: X-Event-Type, in: header, schema: { type: string } }
+        - { name: Idempotency-Key, in: header, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses:
+        '202': { description: Accepted, content: { application/json: { schema: { $ref: '#/components/schemas/IngestResult' } } } }
+        '200': { description: Duplicate (already received) }
+        '401': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /v1/events:
+    get:
+      tags: [Events]
+      summary: List events with delivery counts
+      parameters:
+        - { name: sourceId, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, succeeded, failed, dead, skipped] } }
+        - { name: type, in: query, schema: { type: string } }
+        - { name: before, in: query, schema: { type: string, format: date-time }, description: Cursor from nextCursor }
+        - { name: limit, in: query, schema: { type: integer, default: 25, maximum: 100 } }
+      responses: { '200': { description: OK } }
+    post:
+      tags: [Events]
+      summary: Publish an event with an API key or user token (events:write)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceId, type, payload]
+              properties:
+                sourceId: { type: string, format: uuid }
+                type: { type: string }
+                payload: { type: object }
+                idempotencyKey: { type: string }
+      responses: { '202': { description: Accepted } }
+  /v1/events/{id}:
+    get: { tags: [Events], summary: Event detail with deliveries and every attempt, parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: OK } } }
+  /v1/deliveries/{id}/replay:
+    post: { tags: [Events], summary: Re-queue a failed, dead or skipped delivery, parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '202': { description: Queued } } }
+
+  /v1/stats:
+    get: { tags: [Insights], summary: 24h overview, hourly series and top failing destinations, responses: { '200': { description: OK } } }
+  /v1/audit-logs:
+    get:
+      tags: [Insights]
+      summary: Append-only audit trail (audit:read)
+      parameters:
+        - { name: action, in: query, schema: { type: string }, description: Prefix match, e.g. "auth." }
+        - { name: before, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+      responses: { '200': { description: OK } }
