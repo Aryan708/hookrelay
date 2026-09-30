@@ -1,0 +1,330 @@
+{
+  "name": "HookRelay: payment to CRM, Slack and receipt email",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hookrelay-payments",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "17c906bc-fa55-449a-b616-61228a500068",
+      "name": "HookRelay webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "2fb0452c-cbe9-4ab9-a753-e7954e1cc861"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify X-HookRelay-Signature before trusting anything in the request.\n// Signature = HMAC-SHA256(secret, `${t}.${rawBody}`), header \"t=<unix>,v1=<hex>\".\n// n8n env needs: NODE_FUNCTION_ALLOW_BUILTIN=crypto, HOOKRELAY_DESTINATION_SECRET=<destination secret>\nconst crypto = require('crypto');\nconst secret = $env.HOOKRELAY_DESTINATION_SECRET;\nconst req = $input.first().json;\nconst header = req.headers['x-hookrelay-signature'] || '';\n\n// The Webhook node keeps the exact raw bytes (Raw Body option) - sign over those, not re-serialized JSON.\nlet raw;\ntry {\n  raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n} catch {\n  raw = JSON.stringify(req.body);\n}\n\nconst parts = {};\nfor (const piece of header.split(',')) {\n  const i = piece.indexOf('=');\n  if (i > 0) parts[piece.slice(0, i).trim()] = piece.slice(i + 1).trim();\n}\nconst t = Number(parts.t);\nconst fresh = Number.isInteger(t) && Math.abs(Date.now() / 1000 - t) <= 300;\nconst expected = secret ? crypto.createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex') : '';\nconst valid =\n  Boolean(secret) && fresh && typeof parts.v1 === 'string' && parts.v1.length === expected.length &&\n  crypto.timingSafeEqual(Buffer.from(parts.v1), Buffer.from(expected));\n\nreturn [{\n  json: {\n    valid,\n    reason: !secret ? 'missing_secret' : !fresh ? 'expired_or_malformed' : valid ? null : 'mismatch',\n    eventId: req.headers['x-hookrelay-event-id'],\n    deliveryId: req.headers['x-hookrelay-delivery-id'],\n    payload: typeof req.body === 'object' ? req.body : JSON.parse(raw),\n  },\n}];"
+      },
+      "id": "85611ca8-a3b6-46f5-9fc0-d91590c5d48a",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "9e80cb65-dcdb-4779-b466-dd941d2a8768",
+              "leftValue": "={{ $json.valid }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a5ee44c8-02c1-455c-b82f-81d31380059f",
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"invalid_signature\", \"reason\": $json.reason } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "17a81346-9bf5-4a1e-a6c3-ffa3f915bbd3",
+      "name": "Reject (401)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ inputs: [{ idProperty: 'email', id: $('Verify signature').item.json.payload.customer.email, properties: { email: $('Verify signature').item.json.payload.customer.email, firstname: ($('Verify signature').item.json.payload.customer.name || '').split(' ')[0], lifecyclestage: 'customer', last_payment_amount: $('Verify signature').item.json.payload.amount / 100 } }] }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "6f03667d-8af1-48de-a36d-59eaa471d14f",
+      "name": "Upsert CRM contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "HubSpot private app token"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "b1d9a86d-f39a-47ce-b2fd-adaecfaad3ec",
+              "leftValue": "={{ $('Verify signature').item.json.payload.amount }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              },
+              "rightValue": 10000
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "11f98965-7152-4f34-8295-a8f2ba8c4759",
+      "name": "High-value payment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: ':moneybag: ' + $('Verify signature').item.json.payload.summary + ' (event ' + $('Verify signature').item.json.eventId + ')' }) }}",
+        "options": {}
+      },
+      "id": "65638b02-6839-475c-baf9-f48b9981ef65",
+      "name": "Alert sales in Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.sendgrid.com/v3/mail/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ personalizations: [{ to: [{ email: $('Verify signature').item.json.payload.customer.email }] }], from: { email: 'billing@example.com' }, subject: 'Thanks for your payment', content: [{ type: 'text/plain', value: 'Hi ' + $('Verify signature').item.json.payload.customer.name + ', we received your payment of ' + ($('Verify signature').item.json.payload.amount / 100).toFixed(2) + ' ' + String($('Verify signature').item.json.payload.currency).toUpperCase() + '.' }] }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "0b5f70e9-8c47-4766-980f-4d7c935110f2",
+      "name": "Send receipt email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "SendGrid API key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { received: true, eventId: $('Verify signature').item.json.eventId } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "ec1564a8-8f63-4041-b7f2-f692104c2082",
+      "name": "Acknowledge (200)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "HookRelay webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify signature": {
+      "main": [
+        [
+          {
+            "node": "Signature valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "node": "Upsert CRM contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject (401)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert CRM contact": {
+      "main": [
+        [
+          {
+            "node": "High-value payment?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High-value payment?": {
+      "main": [
+        [
+          {
+            "node": "Alert sales in Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send receipt email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert sales in Slack": {
+      "main": [
+        [
+          {
+            "node": "Send receipt email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send receipt email": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge (200)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "errorWorkflow": ""
+  },
+  "pinData": {},
+  "active": false,
+  "tags": [
+    {
+      "name": "hookrelay"
+    },
+    {
+      "name": "payments"
+    }
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

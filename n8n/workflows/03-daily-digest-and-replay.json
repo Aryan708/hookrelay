@@ -1,0 +1,316 @@
+{
+  "name": "HookRelay: daily delivery digest and dead-letter replay",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "482674a3-f70a-4c2e-824d-7f49837e92bb",
+      "name": "Every weekday 9:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.HOOKRELAY_API_URL }}/v1/stats",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "dd9ac561-afdb-4cf5-a21c-0061256bef4a",
+      "name": "Get 24h stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "HookRelay API key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.HOOKRELAY_API_URL }}/v1/events",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "dead"
+            },
+            {
+              "name": "limit",
+              "value": "50"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "8d77031f-1268-4af2-8c90-e12236879481",
+      "name": "Get dead-lettered events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "HookRelay API key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per dead-lettered event (cap the batch so a bad day can't trigger a replay storm).\nconst events = $input.first().json.data || [];\nreturn events.slice(0, 20).map((e) => ({ json: { eventId: e.id, type: e.event_type, source: e.source_name } }));"
+      },
+      "id": "dc438adb-f7d2-4a3b-b260-eb0e8571f12f",
+      "name": "One item per event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.HOOKRELAY_API_URL }}/v1/events/{{ $json.eventId }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "feda3f9a-4253-4898-bab7-fad44c932be6",
+      "name": "Get event deliveries",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "HookRelay API key"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Keep only deliveries that died on transient errors (network / 5xx / 429). 4xx means the payload is wrong: replaying won't help.\nconst out = [];\nfor (const item of $input.all()) {\n  for (const d of item.json.deliveries || []) {\n    const transient = d.last_status_code === null || d.last_status_code >= 500 || d.last_status_code === 429;\n    if (d.status === 'dead' && transient) out.push({ json: { deliveryId: d.id, destination: d.destination_name, lastError: d.last_error } });\n  }\n}\nreturn out;"
+      },
+      "id": "3e5e7f87-97b7-4eb9-8e74-7be0fce7e674",
+      "name": "Pick transient failures",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        300
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HOOKRELAY_API_URL }}/v1/deliveries/{{ $json.deliveryId }}/replay",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "59cc3915-d86b-44e8-9c7a-29710fc93120",
+      "name": "Replay delivery",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "HookRelay API key"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const s = $('Get 24h stats').first().json;\nconst replayed = $('Pick transient failures').all().length;\nconst rate = s.successRate === null ? 'n/a' : `${(s.successRate * 100).toFixed(1)}%`;\nconst failing = (s.topFailingDestinations || []).map((d) => `- ${d.name}: ${d.failures} failed (${d.sample_error || 'unknown'})`).join('\\n');\nreturn [{\n  json: {\n    healthy: s.successRate === null || s.successRate >= 0.95,\n    text: [\n      `*HookRelay daily digest*`,\n      `Events (24h): ${s.events_24h} | Delivery success: ${rate}`,\n      `Dead-lettered deliveries auto-replayed: ${replayed}`,\n      failing ? `Needs attention:\\n${failing}` : 'No failing destinations.',\n    ].join('\\n'),\n  },\n}];",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "69861277-687b-4c0e-a7f1-cc367819d541",
+      "name": "Build digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
+        "options": {}
+      },
+      "id": "10f417cb-c091-4639-bba5-d6cb42128386",
+      "name": "Post digest to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Every weekday 9:00": {
+      "main": [
+        [
+          {
+            "node": "Get 24h stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get 24h stats": {
+      "main": [
+        [
+          {
+            "node": "Get dead-lettered events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get dead-lettered events": {
+      "main": [
+        [
+          {
+            "node": "One item per event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per event": {
+      "main": [
+        [
+          {
+            "node": "Get event deliveries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get event deliveries": {
+      "main": [
+        [
+          {
+            "node": "Pick transient failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick transient failures": {
+      "main": [
+        [
+          {
+            "node": "Replay delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay delivery": {
+      "main": [
+        [
+          {
+            "node": "Build digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build digest": {
+      "main": [
+        [
+          {
+            "node": "Post digest to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": [
+    {
+      "name": "hookrelay"
+    },
+    {
+      "name": "scheduled"
+    }
+  ]
+}
