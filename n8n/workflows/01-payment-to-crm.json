@@ -1,4 +1,5 @@
 {
+  "id": "hrPaymentToCrm01",
   "name": "HookRelay: payment to CRM, Slack and receipt email",
   "nodes": [
     {
@@ -10,7 +11,7 @@
           "rawBody": true
         }
       },
-      "id": "17c906bc-fa55-449a-b616-61228a500068",
+      "id": "48065c91-f1a5-4a94-be3d-678bd8d5f55f",
       "name": "HookRelay webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
@@ -18,13 +19,13 @@
         0,
         300
       ],
-      "webhookId": "2fb0452c-cbe9-4ab9-a753-e7954e1cc861"
+      "webhookId": "0659583c-3d57-4d10-8563-d4c3b2265947"
     },
     {
       "parameters": {
         "jsCode": "// Verify X-HookRelay-Signature before trusting anything in the request.\n// Signature = HMAC-SHA256(secret, `${t}.${rawBody}`), header \"t=<unix>,v1=<hex>\".\n// n8n env needs: NODE_FUNCTION_ALLOW_BUILTIN=crypto, HOOKRELAY_DESTINATION_SECRET=<destination secret>\nconst crypto = require('crypto');\nconst secret = $env.HOOKRELAY_DESTINATION_SECRET;\nconst req = $input.first().json;\nconst header = req.headers['x-hookrelay-signature'] || '';\n\n// The Webhook node keeps the exact raw bytes (Raw Body option) - sign over those, not re-serialized JSON.\nlet raw;\ntry {\n  raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n} catch {\n  raw = JSON.stringify(req.body);\n}\n\nconst parts = {};\nfor (const piece of header.split(',')) {\n  const i = piece.indexOf('=');\n  if (i > 0) parts[piece.slice(0, i).trim()] = piece.slice(i + 1).trim();\n}\nconst t = Number(parts.t);\nconst fresh = Number.isInteger(t) && Math.abs(Date.now() / 1000 - t) <= 300;\nconst expected = secret ? crypto.createHmac('sha256', secret).update(`${t}.${raw}`).digest('hex') : '';\nconst valid =\n  Boolean(secret) && fresh && typeof parts.v1 === 'string' && parts.v1.length === expected.length &&\n  crypto.timingSafeEqual(Buffer.from(parts.v1), Buffer.from(expected));\n\nreturn [{\n  json: {\n    valid,\n    reason: !secret ? 'missing_secret' : !fresh ? 'expired_or_malformed' : valid ? null : 'mismatch',\n    eventId: req.headers['x-hookrelay-event-id'],\n    deliveryId: req.headers['x-hookrelay-delivery-id'],\n    payload: typeof req.body === 'object' ? req.body : JSON.parse(raw),\n  },\n}];"
       },
-      "id": "85611ca8-a3b6-46f5-9fc0-d91590c5d48a",
+      "id": "60f08dbb-9ae2-49df-be98-90edd6873c9b",
       "name": "Verify signature",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -43,7 +44,7 @@
           },
           "conditions": [
             {
-              "id": "9e80cb65-dcdb-4779-b466-dd941d2a8768",
+              "id": "0429b4d1-2ee6-4657-bd68-68f4b6d5bf1b",
               "leftValue": "={{ $json.valid }}",
               "operator": {
                 "type": "boolean",
@@ -56,7 +57,7 @@
         },
         "options": {}
       },
-      "id": "a5ee44c8-02c1-455c-b82f-81d31380059f",
+      "id": "1a6181e7-56f7-4d35-97b8-de4d4b35a13e",
       "name": "Signature valid?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
@@ -73,7 +74,7 @@
           "responseCode": 401
         }
       },
-      "id": "17a81346-9bf5-4a1e-a6c3-ffa3f915bbd3",
+      "id": "6760c777-3b35-45f6-883e-efdcac828880",
       "name": "Reject (401)",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
@@ -95,7 +96,7 @@
           "timeout": 10000
         }
       },
-      "id": "6f03667d-8af1-48de-a36d-59eaa471d14f",
+      "id": "9118737f-2f3f-4780-8e62-2504fd8bc434",
       "name": "Upsert CRM contact",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
@@ -123,7 +124,7 @@
           },
           "conditions": [
             {
-              "id": "b1d9a86d-f39a-47ce-b2fd-adaecfaad3ec",
+              "id": "e276bd29-4820-415e-9858-e4ca37974013",
               "leftValue": "={{ $('Verify signature').item.json.payload.amount }}",
               "operator": {
                 "type": "number",
@@ -136,7 +137,7 @@
         },
         "options": {}
       },
-      "id": "11f98965-7152-4f34-8295-a8f2ba8c4759",
+      "id": "24967543-36af-468e-9b40-ce55849f8707",
       "name": "High-value payment?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
@@ -154,7 +155,7 @@
         "jsonBody": "={{ JSON.stringify({ text: ':moneybag: ' + $('Verify signature').item.json.payload.summary + ' (event ' + $('Verify signature').item.json.eventId + ')' }) }}",
         "options": {}
       },
-      "id": "65638b02-6839-475c-baf9-f48b9981ef65",
+      "id": "f4d11def-68a4-497e-927b-ed1b01591477",
       "name": "Alert sales in Slack",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
@@ -179,7 +180,7 @@
           "timeout": 10000
         }
       },
-      "id": "0b5f70e9-8c47-4766-980f-4d7c935110f2",
+      "id": "047ac36e-ce3f-4d02-b61d-4ea8141b2dd4",
       "name": "Send receipt email",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
@@ -205,7 +206,7 @@
           "responseCode": 200
         }
       },
-      "id": "ec1564a8-8f63-4041-b7f2-f692104c2082",
+      "id": "69a6dbca-1da4-4dfb-b3e3-8854539bbbae",
       "name": "Acknowledge (200)",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
@@ -312,7 +313,7 @@
     "executionOrder": "v1",
     "saveDataErrorExecution": "all",
     "saveDataSuccessExecution": "none",
-    "errorWorkflow": ""
+    "errorWorkflow": "hrErrorAlerts002"
   },
   "pinData": {},
   "active": false,

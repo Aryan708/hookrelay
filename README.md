@@ -149,7 +149,7 @@ curl -X POST http://localhost:4000/v1/events \
 
 ## n8n workflows
 
-Import from `n8n/workflows/` (n8n → Workflows → Import from file). They're also mounted read-only at `/workflows` in the compose stack.
+Import from `n8n/workflows/` (n8n → Workflows → Import from file, or `n8n import:workflow --input=<file>`). They're also mounted read-only at `/workflows` in the compose stack. Tested on n8n 2.41: a forged request gets `401 mismatch`, a stale one `401 expired`, and a delivery from HookRelay passes verification in the Code node.
 
 | Workflow | What it shows |
 | --- | --- |

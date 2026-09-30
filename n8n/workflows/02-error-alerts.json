@@ -1,9 +1,10 @@
 {
+  "id": "hrErrorAlerts002",
   "name": "HookRelay: workflow error alerts",
   "nodes": [
     {
       "parameters": {},
-      "id": "f0c760d7-af62-4d07-b148-62956c9c333e",
+      "id": "5901e73e-2c6b-4299-9e94-480119b90503",
       "name": "On workflow error",
       "type": "n8n-nodes-base.errorTrigger",
       "typeVersion": 1,
@@ -16,7 +17,7 @@
       "parameters": {
         "jsCode": "// Runs whenever a workflow that lists this one as its Error Workflow fails.\nconst e = $input.first().json;\nconst wf = e.workflow || {};\nconst ex = e.execution || {};\nconst err = ex.error || {};\nreturn [{\n  json: {\n    text: [\n      `:rotating_light: n8n workflow failed: *${wf.name}*`,\n      `Node: ${ex.lastNodeExecuted || 'unknown'}`,\n      `Error: ${(err.message || 'no message').slice(0, 300)}`,\n      ex.url ? `Execution: ${ex.url}` : null,\n      'HookRelay will retry the delivery automatically (the webhook returned 5xx).',\n    ].filter(Boolean).join('\\n'),\n  },\n}];"
       },
-      "id": "20385c9f-8f3e-493f-85ef-91657493a529",
+      "id": "88709613-8f6d-415f-8d09-b8a9254e6885",
       "name": "Format alert",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -34,7 +35,7 @@
         "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
         "options": {}
       },
-      "id": "39422096-6a30-4b37-91d6-d0fb3bd149ce",
+      "id": "6bdf891c-f2c7-402e-a0cb-61471345358f",
       "name": "Post to Slack",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
