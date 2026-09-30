@@ -1,0 +1,92 @@
+# Local stack: Postgres, API, delivery worker, dashboard and n8n.
+#   cp .env.example .env   # then fill in the secrets
+#   docker compose up --build
+# Dashboard: http://localhost:3000   API docs: http://localhost:4000/docs   n8n: http://localhost:5678
+
+x-api-env: &api-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://hookrelay:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/hookrelay
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+  WEB_URL: http://localhost:3000
+  API_PUBLIC_URL: http://localhost:3000/api
+  CORS_ORIGINS: http://localhost:3000
+  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  # The only private host deliveries may reach is the n8n container (SSRF allowlist).
+  DESTINATION_HOST_ALLOWLIST: n8n
+  ALLOW_HTTP_DESTINATIONS: "true"
+  LOG_LEVEL: info
+
+x-hardening: &hardening
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  tmpfs: ["/tmp"]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hookrelay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: hookrelay
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hookrelay"]
+      interval: 5s
+      retries: 10
+
+  migrate:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    command: ["node", "dist/db/migrate.js"]
+    environment: *api-env
+    depends_on: { postgres: { condition: service_healthy } }
+    <<: *hardening
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    environment:
+      <<: *api-env
+      WORKER_ENABLED: "false" # deliveries run in the dedicated worker service
+    ports: ["4000:4000"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    <<: *hardening
+
+  worker:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    command: ["node", "dist/worker/index.js"]
+    environment: *api-env
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    deploy: { replicas: 2 } # safe: deliveries are claimed with FOR UPDATE SKIP LOCKED
+    <<: *hardening
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args: { API_URL: "http://api:4000" }
+    ports: ["3000:3000"]
+    depends_on: [api]
+    <<: *hardening
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    ports: ["5678:5678"]
+    environment:
+      N8N_HOST: localhost
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Asia/Kolkata
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY}
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto # signature verification in the Code node
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false" # workflows read the values below via $env
+      HOOKRELAY_API_URL: http://api:4000
+      HOOKRELAY_DESTINATION_SECRET: ${HOOKRELAY_DESTINATION_SECRET:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    volumes:
+      - n8ndata:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+
+volumes:
+  pgdata:
+  n8ndata:

@@ -1,0 +1,7 @@
+# Changes to security-sensitive code require review from the owner (branch protection enforces this).
+*                                   @Aryan708
+/apps/api/src/middleware/           @Aryan708
+/apps/api/src/lib/crypto.ts         @Aryan708
+/apps/api/src/lib/ssrf.ts           @Aryan708
+/apps/api/migrations/               @Aryan708
+/.github/                           @Aryan708
