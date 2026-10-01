@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Build context: repository root.
 
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
@@ -14,7 +14,7 @@ ENV NEXT_TELEMETRY_DISABLED=1 NEXT_OUTPUT=standalone API_URL=${API_URL}
 COPY apps/web apps/web
 RUN npm run build --workspace apps/web
 
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 WORKDIR /app
 COPY --from=build --chown=node:node /repo/apps/web/.next/standalone ./

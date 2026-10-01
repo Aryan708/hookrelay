@@ -83,7 +83,7 @@ flowchart LR
 | Layer | Choices |
 | --- | --- |
 | Dashboard | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4 |
-| API | Node.js 22, Express 5, TypeScript, zod, pino |
+| API | Node.js 26, Express 5, TypeScript, zod, pino |
 | Data | PostgreSQL 16 (raw SQL via `pg`, forward-only migrations) |
 | Auth | JWT, OAuth 2.0 (GitHub, PKCE), API keys, RBAC |
 | Automation | n8n (webhook trigger, Code, IF, HTTP Request, Schedule, Error Trigger) |
@@ -108,7 +108,7 @@ docker compose up --build
 
 ## Local development
 
-Requires Node 22 and PostgreSQL 16.
+Requires Node 26 (22+ works) and PostgreSQL 16.
 
 ```bash
 npm install
