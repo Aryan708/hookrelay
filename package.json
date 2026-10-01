@@ -10,7 +10,7 @@
     "apps/web"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dev:api": "npm run dev -w apps/api",
